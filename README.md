@@ -48,7 +48,7 @@ npm run build      # vue-tsc + vite build → dist/
 npm run preview    # preview production build
 ```
 
-No environment variables are required for the local-only MVP.
+No environment variables are required for the local-only MVP. Cloud sync (Supabase) requires `VITE_SUPABASE_URL` + `VITE_SUPABASE_ANON_KEY` — see [Supabase](#supabase-milestone-2-optional-sync) and [Vercel](#vercel).
 
 ### Validate with the samples
 1. Open the app → click **“Try sample: Alice (text)”** and **“Try sample: Illustrated”** (or drag the files from `public/samples/`).
@@ -73,13 +73,16 @@ src/
   lib/
     db.ts                  — IndexedDB via `idb` (books / positions / annotations / bookmarks)
     epub.ts                — metadata sanitization, hashing, themes, reader CSS builder
+    supabase.ts            — Supabase client + `Database` types (Milestone 2)
   stores/
-    library.ts             — import (makeBook → sanitize → put), dedupe by hash, progress
-    reader.ts              — foliate-view lifecycle, search, annotations, bookmarks
+    library.ts             — import (makeBook → sanitize → put), dedupe by hash, progress, cloud push/pull
+    reader.ts              — foliate-view lifecycle, search, annotations, bookmarks, cloud sync
     settings.ts            — persisted reader settings (localStorage)
+    sync.ts                — Supabase auth + push/pull for books, positions, annotations, bookmarks (Milestone 2)
   components/
-    LibraryView.vue        — header, search/sort, drag-drop overlay, grid
-    BookCard.vue           — cover, progress, last-read, remove
+    LibraryView.vue        — header, search/sort, drag-drop overlay, grid, sync button
+    AuthPanel.vue          — sign in / sign up / sign out, sync status (Milestone 2)
+    BookCard.vue           — cover, progress, last-read, remove, “Cloud” badge
     ReaderView.vue         — foliate-view host, chrome, sidebar, highlight popup, swipe
     TocTree.vue            — recursive TOC
     SettingsPanel.vue      — theme / layout / typography controls
@@ -94,7 +97,7 @@ scripts/make_samples.py    — sample EPUB generator
 
 | Store | Key | Contents |
 |---|---|---|
-| `books` | `id` (content hash) | title, author, coverUrl, fileName, fileSize, addedAt, lastReadAt, progress, cfi, tocLabel, **data: ArrayBuffer** |
+| `books` | `id` (content hash) | title, author, coverUrl, fileName, fileSize, addedAt, lastReadAt, progress, cfi, tocLabel, **updatedAt**, **hasData**, **data: ArrayBuffer** |
 | `positions` | `bookId` | cfi, fraction, tocLabel, updatedAt |
 | `annotations` | `id` | bookId, cfi, color, note, excerpt, timestamps |
 | `bookmarks` | `id` | bookId, cfi, label, createdAt |
@@ -142,15 +145,20 @@ EPUBs are untrusted HTML/CSS/JS. Defences, in depth:
 
 ---
 
-## Supabase (Milestone 2 — optional sync)
+## Supabase (Milestone 2 — optional cross-device sync)
 
-The MVP is local-only by design. If you want cross-device sync, the schema in [`supabase/schema.sql`](supabase/schema.sql) mirrors the IndexedDB model:
+The MVP is local-only by design. Everything works without Supabase. If you want your library, reading positions, highlights and bookmarks to follow you across devices, enable sync:
 
-- `books`, `reading_positions`, `annotations`, `bookmarks` — all with `user_id → auth.users`
-- **Row Level Security** on every table (`auth.uid() = user_id`)
-- `updated_at` triggers + indexes on `(user_id, last_read_at)` / `book_id`
+1. Create a Supabase project and run [`supabase/schema.sql`](supabase/schema.sql) in its SQL editor (tables, RLS policies, indexes, `updated_at` triggers).
+2. Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` in `.env` (local) and in your Vercel project settings (production) — see [`.env.example`](.env.example).
+3. Sign in with email + password in the app (“Cloud sync” button in the library header). Sign-up is open and auto-confirmed.
 
-To enable: create a Supabase project → run `schema.sql` → set `VITE_SUPABASE_URL` / `VITE_SUPABASE_ANON_KEY` → implement upserts in `stores/library.ts` / `stores/reader.ts` (last-write-wins on `updated_at` is sufficient for an MVP). EPUB file bytes are **not** synced (they’re large); sync metadata + positions only, and re-import files per device.
+**Sync model:** last-write-wins on `updated_at`. Pulling merges cloud rows into IndexedDB and never deletes local books; pushing upserts metadata/positions/annotations/bookmarks. **EPUB file bytes are never synced** — they stay on the device that imported them. A book mirrored from the cloud shows a “Cloud” badge; import its EPUB locally to read it (import dedupes by content hash, and positions/notes re-attach by CFI).
+
+All four tables have RLS (`auth.uid() = user_id`), so users only ever see their own rows. The Supabase **anon key is public by design** (it belongs in client code) — RLS, not key secrecy, enforces isolation.
+
+**What syncs:** library metadata + progress, reading positions (CFI/fraction), highlights with notes, bookmarks.
+**What does not sync:** EPUB bytes, reader settings (theme, font size, … stay in `localStorage`), per-device cover blob URLs.
 
 ---
 
@@ -163,7 +171,9 @@ npm run build
 npx vercel --prod
 ```
 
-Or connect the GitHub repo in the Vercel dashboard — `vercel.json` already sets the Vite framework, SPA rewrites, immutable asset caching, and the CSP/security headers. No env vars needed.
+Or connect the GitHub repo in the Vercel dashboard — `vercel.json` already sets the Vite framework, SPA rewrites, immutable asset caching, and the CSP/security headers.
+
+**Required env vars in Vercel project settings** (target production, preview, development) for cloud sync: `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. Without them the app still works fully in local-only mode and shows a “Cloud sync not configured” hint.
 
 ### Any static host
 

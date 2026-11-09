@@ -10,6 +10,8 @@ import {
   putBookmark,
 } from '../lib/db'
 import { buildReaderCSS, sanitizeText, uid } from '../lib/epub'
+import { isoToMs } from '../lib/supabase'
+import { useSyncStore } from './sync'
 import { useSettingsStore } from './settings'
 import type {
   AnnotationColor,
@@ -46,12 +48,21 @@ export const useReaderStore = defineStore('reader', () => {
   const searchIndex = ref(-1) // flat index into flattened results
 
   const settings = useSettingsStore()
+  const sync = useSyncStore()
 
   function attachView(v: AnyView) {
     view.value = v
   }
 
   function detachView() {
+    if (positionDebounce) {
+      clearTimeout(positionDebounce)
+      positionDebounce = null
+    }
+    // Final position flush to the cloud
+    if (bookId.value && cfi.value && sync.signedIn) {
+      void sync.pushPosition(bookId.value, cfi.value, fraction.value, tocLabel.value)
+    }
     try {
       view.value?.close?.()
     } catch {
@@ -74,6 +85,80 @@ export const useReaderStore = defineStore('reader', () => {
     } catch (e) {
       console.warn('[reader] applySettings', e)
     }
+  }
+
+  let positionDebounce: ReturnType<typeof setTimeout> | null = null
+
+  function schedulePositionPush() {
+    if (!bookId.value || !sync.signedIn) return
+    if (positionDebounce) clearTimeout(positionDebounce)
+    positionDebounce = setTimeout(async () => {
+      if (!bookId.value || !cfi.value) return
+      try {
+        await sync.pushPosition(bookId.value, cfi.value, fraction.value, tocLabel.value)
+      } catch {
+        /* sync failures must not break local reading */
+      }
+    }, 2000)
+  }
+
+  /** Merge cloud annotations/bookmarks/position for a book into local IndexedDB (newer wins). */
+  async function mergeCloudBookState(bookId: string) {
+    const mapAnn = (row: unknown): AnnotationRecord => {
+      const r = row as { id: string; book_id: string; cfi: string; color: string; note: string; excerpt: string; created_at?: string | null; updated_at?: string | null }
+      return {
+        id: r.id,
+        bookId: r.book_id,
+        cfi: r.cfi,
+        color: r.color as AnnotationColor,
+        note: r.note,
+        excerpt: r.excerpt,
+        createdAt: isoToMs(r.created_at ?? null) ?? Date.now(),
+        updatedAt: isoToMs(r.updated_at ?? null) ?? Date.now(),
+      }
+    }
+    const mapBm = (row: unknown): BookmarkRecord => {
+      const r = row as { id: string; book_id: string; cfi: string; label: string; created_at?: string | null }
+      return {
+        id: r.id,
+        bookId: r.book_id,
+        cfi: r.cfi,
+        label: r.label,
+        createdAt: isoToMs(r.created_at ?? null) ?? Date.now(),
+      }
+    }
+
+    const [annRows, bmRows] = await Promise.all([
+      sync.pullAnnotations(bookId),
+      sync.pullBookmarks(bookId),
+    ])
+
+    const localAnns = await listAnnotations(bookId)
+    const byAnnId = new Map(localAnns.map((a) => [a.id, a]))
+    for (const r of annRows) {
+      const m = mapAnn(r)
+      const existing = byAnnId.get(m.id)
+      const serverMs = isoToMs(r.updated_at ?? null) ?? 0
+      if (!existing || serverMs > existing.updatedAt) byAnnId.set(m.id, m)
+    }
+    annotations.value = Array.from(byAnnId.values()).sort((a, b) => a.createdAt - b.createdAt)
+    for (const a of annotations.value) {
+      try {
+        await view.value?.addAnnotation?.({ value: a.cfi, color: a.color, note: a.note })
+      } catch {
+        /* overlay may not be ready yet — applied again by openBook path */
+      }
+    }
+
+    const localBms = await listBookmarks(bookId)
+    const byBmId = new Map(localBms.map((b) => [b.id, b]))
+    for (const r of bmRows) {
+      const m = mapBm(r)
+      const existing = byBmId.get(m.id)
+      const serverMs = isoToMs(r.created_at ?? null) ?? 0
+      if (!existing || serverMs > existing.createdAt) byBmId.set(m.id, m)
+    }
+    bookmarks.value = Array.from(byBmId.values()).sort((a, b) => a.createdAt - b.createdAt)
   }
 
   async function openBook(opts: {
@@ -113,6 +198,22 @@ export const useReaderStore = defineStore('reader', () => {
       lastCfi = pos?.cfi || null
     } catch {
       lastCfi = null
+    }
+
+    // Merge cloud state for this book (newer updated_at wins), then apply locally
+    if (sync.signedIn) {
+      try {
+        await mergeCloudBookState(opts.id)
+      } catch {
+        /* keep local state if cloud read fails */
+      }
+      // Re-read possibly-merged local position
+      try {
+        const pos = await getPosition(opts.id)
+        if (pos) lastCfi = pos.cfi || null
+      } catch {
+        /* noop */
+      }
     }
 
     const v = view.value
@@ -174,6 +275,7 @@ export const useReaderStore = defineStore('reader', () => {
     cfi.value = detail.cfi ?? null
     tocLabel.value = detail.tocItem?.label ?? null
     pageLabel.value = detail.pageItem?.label ?? null
+    schedulePositionPush()
   }
 
   async function goTo(target: string | number) {
@@ -284,6 +386,13 @@ export const useReaderStore = defineStore('reader', () => {
     }
     await putAnnotation(rec)
     annotations.value = [...annotations.value, rec]
+    if (sync.signedIn) {
+      try {
+        await sync.pushAnnotation(rec)
+      } catch {
+        /* sync failures must not break local reading */
+      }
+    }
     try {
       await view.value?.addAnnotation?.({ value: rec.cfi, color: rec.color, note: rec.note })
     } catch {
@@ -298,6 +407,13 @@ export const useReaderStore = defineStore('reader', () => {
     const next = { ...a, note: sanitizeText(note, 2000), updatedAt: Date.now() }
     await putAnnotation(next)
     annotations.value = annotations.value.map((x) => (x.id === id ? next : x))
+    if (sync.signedIn) {
+      try {
+        await sync.pushAnnotation(next)
+      } catch {
+        /* sync failures must not break local reading */
+      }
+    }
   }
 
   async function removeAnnotation(id: string) {
@@ -305,6 +421,13 @@ export const useReaderStore = defineStore('reader', () => {
     if (!a) return
     await dbDeleteAnnotation(id)
     annotations.value = annotations.value.filter((x) => x.id !== id)
+    if (sync.signedIn) {
+      try {
+        await sync.deleteRemoteAnnotation(id)
+      } catch {
+        /* sync failures must not break local reading */
+      }
+    }
     try {
       await view.value?.deleteAnnotation?.({ value: a.cfi })
     } catch {
@@ -332,12 +455,26 @@ export const useReaderStore = defineStore('reader', () => {
     }
     await putBookmark(rec)
     bookmarks.value = [...bookmarks.value, rec]
+    if (sync.signedIn) {
+      try {
+        await sync.pushBookmark(rec)
+      } catch {
+        /* sync failures must not break local reading */
+      }
+    }
     return rec
   }
 
   async function removeBookmark(id: string) {
     await dbDeleteBookmark(id)
     bookmarks.value = bookmarks.value.filter((b) => b.id !== id)
+    if (sync.signedIn) {
+      try {
+        await sync.deleteRemoteBookmark(id)
+      } catch {
+        /* sync failures must not break local reading */
+      }
+    }
   }
 
   return {

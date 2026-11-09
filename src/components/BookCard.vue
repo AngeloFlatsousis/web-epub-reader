@@ -2,8 +2,9 @@
 import { computed } from 'vue'
 import type { BookMeta } from '../types'
 
-const props = defineProps<{ book: BookMeta }>()
+const props = defineProps<{ book: BookMeta; hasData?: boolean }>()
 const emit = defineEmits<{ open: [id: string]; remove: [id: string] }>()
+const hasData = computed(() => props.hasData ?? true)
 
 const progressPct = computed(() => Math.round((props.book.progress ?? 0) * 100))
 const lastRead = computed(() => {
@@ -57,6 +58,9 @@ function onRemove(e: Event) {
           class="absolute bottom-2 left-2 rounded-full bg-black/70 px-2 py-0.5 text-[11px] font-medium text-white backdrop-blur"
         >
           {{ progressPct }}%
+        </span>
+        <span v-if="!hasData" class="absolute top-2 right-2 rounded-full bg-zinc-900 px-2 py-0.5 text-[10px] font-medium text-white opacity-80 dark:bg-zinc-300 dark:text-zinc-900" title="Mirrored from cloud — EPUB not on this device">
+          Cloud
         </span>
         <span
           v-if="progressPct >= 100"

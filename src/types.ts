@@ -11,6 +11,9 @@ export interface BookRecord {
   cfi: string | null
   tocLabel: string | null
   data: ArrayBuffer
+  updatedAt: number // last-write-wins clock for cloud sync conflicts
+  // false for books mirrored from the cloud whose EPUB bytes are not on this device
+  hasData: boolean
 }
 
 export interface BookMeta {
@@ -25,6 +28,7 @@ export interface BookMeta {
   progress: number
   cfi: string | null
   tocLabel: string | null
+  hasData: boolean
 }
 
 export interface PositionRecord {

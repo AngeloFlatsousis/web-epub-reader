@@ -90,7 +90,7 @@ export async function updateBookProgress(
   const db = await getDB()
   const book = await db.get('books', id)
   if (!book) return
-  const next = { ...book, ...patch }
+  const next = { ...book, ...patch, updatedAt: Date.now() }
   await db.put('books', next)
   await db.put('positions', {
     bookId: id,
