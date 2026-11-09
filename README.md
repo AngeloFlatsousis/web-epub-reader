@@ -2,7 +2,7 @@
 
 A polished, production-ready EPUB reading experience that runs **entirely in the browser**. No backend required for the core experience: your library, reading positions, highlights, and bookmarks live in IndexedDB on your device. Optional Supabase sync (Milestone 2) is documented but not required.
 
-**Live demo:** deploy to Vercel (`npm run build` → `dist/`). See [Deployment](#deployment).
+**Live demo:** https://web-epub-reader-zeta.vercel.app (Vercel, production). Build: `npm run build` → `dist/`. See [Deployment](#deployment).
 
 ![Stack](https://img.shields.io/badge/Vue%203-42b883) ![TypeScript](https://img.shields.io/badge/TypeScript-3178c6) ![Vite](https://img.shields.io/badge/Vite-646cff) ![Tailwind](https://img.shields.io/badge/Tailwind%20CSS-06b6d4) ![foliate-js](https://img.shields.io/badge/foliate--js-0ea5e9)
 
@@ -172,6 +172,8 @@ npx vercel --prod
 ```
 
 Or connect the GitHub repo in the Vercel dashboard — `vercel.json` already sets the Vite framework, SPA rewrites, immutable asset caching, and the CSP/security headers.
+
+**Live production:** https://web-epub-reader-zeta.vercel.app — both milestones (local reader + Supabase cloud sync) are deployed and auto-deploy from `main` on every push. Required env vars in Vercel project settings: `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (without them the app works fully in local-only mode).
 
 **Required env vars in Vercel project settings** (target production, preview, development) for cloud sync: `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. Without them the app still works fully in local-only mode and shows a “Cloud sync not configured” hint.
 
