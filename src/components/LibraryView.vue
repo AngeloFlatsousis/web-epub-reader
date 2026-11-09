@@ -1,15 +1,26 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useLibraryStore } from '../stores/library'
+import { useSyncStore } from '../stores/sync'
 import BookCard from './BookCard.vue'
+import AuthPanel from './AuthPanel.vue'
 
 const emit = defineEmits<{ open: [id: string] }>()
 
 const library = useLibraryStore()
+const sync = useSyncStore()
 const fileInput = ref<HTMLInputElement | null>(null)
 const dragOver = ref(false)
 const query = ref('')
 const sort = ref<'recent' | 'title' | 'progress'>('recent')
+const syncOpen = ref(false)
+
+watch(
+  () => sync.signedIn,
+  (signedIn) => {
+    if (signedIn) void library.loadLibraryFromCloud()
+  },
+)
 
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase()
@@ -28,6 +39,17 @@ const filtered = computed(() => {
 
 function pickFiles() {
   fileInput.value?.click()
+}
+
+function handleOpen(id: string) {
+  const book = library.metas.find((b) => b.id === id)
+  if (book && !book.hasData) {
+    window.alert(
+      'This book is mirrored from the cloud. Import its EPUB file on this device to read it here — cloud sync stores notes and progress, not the EPUB bytes.',
+    )
+    return
+  }
+  emit('open', id)
 }
 
 async function onFiles(files: FileList | null) {
@@ -109,6 +131,17 @@ async function loadSample(url: string, name: string) {
           </select>
           <button
             type="button"
+            class="inline-flex items-center gap-2 rounded-full border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-700 shadow-sm transition hover:bg-zinc-50 focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+            :title="sync.configured ? (sync.signedIn ? 'Manage cloud sync' : 'Sign in to sync across devices') : 'Configure Supabase env vars to enable cloud sync'"
+            @click="syncOpen = true"
+          >
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M21 12a9 9 0 0 1-9 9m9-9a9 9 0 0 0-9-9m9 9H3m9 9a9 9 0 0 1-9-9m9 9c1.657 0 3-1.343 3-3m0 0c0-1.657-1.343-3-3-3m0 0a9 9 0 0 1 9-9m0 0a9 9 0 0 0 9 9m0 0V3m0 0c0-1.657-1.343-3-3-3m0 0c0 1.657 1.343 3 3 3" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            {{ sync.configured ? (sync.signedIn ? 'Sync' : 'Sign in') : 'Cloud sync' }}
+          </button>
+          <button
+            type="button"
             class="inline-flex items-center gap-2 rounded-full bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-indigo-500 focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2"
             :disabled="library.importing"
             @click="pickFiles"
@@ -178,7 +211,8 @@ async function loadSample(url: string, name: string) {
           v-for="b in filtered"
           :key="b.id"
           :book="b"
-          @open="(id) => emit('open', id)"
+          :has-data="b.hasData"
+          @open="handleOpen"
           @remove="(id) => library.removeBook(id)"
         />
       </div>
@@ -193,6 +227,32 @@ async function loadSample(url: string, name: string) {
       <div class="rounded-2xl bg-white px-8 py-6 text-center shadow-xl dark:bg-zinc-900">
         <p class="text-lg font-semibold text-zinc-900 dark:text-zinc-50">Drop EPUB files to add them</p>
         <p class="mt-1 text-sm text-zinc-500">They’ll be stored locally in IndexedDB</p>
+      </div>
+    </div>
+
+    <!-- Cloud sync panel -->
+    <div v-if="syncOpen" class="fixed inset-0 z-50 flex items-end justify-center" @click.self="syncOpen = false">
+      <div class="fixed inset-0 bg-zinc-900/60 backdrop-blur-sm" aria-hidden="true" />
+      <div
+        class="relative w-full max-w-md mx-auto mt-10 mb-10 rounded-2xl bg-white p-6 shadow-2xl dark:bg-zinc-900"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Cloud sync"
+      >
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-semibold text-zinc-900 dark:text-zinc-50">Cloud sync</h2>
+          <button
+            type="button"
+            class="rounded-full p-1.5 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
+            @click="syncOpen = false"
+            aria-label="Close"
+          >
+            <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M18 6L6 18M6 6l12 12" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </div>
+        <AuthPanel />
       </div>
     </div>
   </div>

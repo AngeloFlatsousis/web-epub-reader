@@ -5,13 +5,19 @@ import ReaderView from './components/ReaderView.vue'
 import { getBook } from './lib/db'
 import { useLibraryStore } from './stores/library'
 import { useReaderStore } from './stores/reader'
+import { useSyncStore } from './stores/sync'
 
 const library = useLibraryStore()
 const reader = useReaderStore()
+const sync = useSyncStore()
 const view = ref<'library' | 'reader'>('library')
 
-onMounted(() => {
+onMounted(async () => {
   void library.loadAll()
+  if (sync.configured) {
+    await sync.init()
+    if (sync.signedIn) await library.loadLibraryFromCloud()
+  }
 })
 
 async function openBook(id: string) {
@@ -45,7 +51,7 @@ function backToLibrary() {
       <ReaderView v-else @back="backToLibrary" />
     </div>
     <footer class="border-t border-zinc-200 px-4 py-2 text-center text-[11px] text-zinc-400 dark:border-zinc-800 dark:text-zinc-500">
-      OpenBook · EPUBs render locally via foliate-js · Books &amp; notes stay in your browser (IndexedDB)
+      OpenBook · EPUBs render locally via foliate-js · Books &amp; notes stay in your browser (IndexedDB) · Optional cloud sync via Supabase
     </footer>
   </div>
 </template>

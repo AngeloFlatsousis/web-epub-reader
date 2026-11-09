@@ -2,9 +2,12 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { deleteBook as dbDeleteBook, getBook, listBooks, putBook, updateBookProgress } from '../lib/db'
 import { formatContributor, formatTitle, hashBuffer, sanitizeText } from '../lib/epub'
+import { isoToMs } from '../lib/supabase'
+import { useSyncStore } from './sync'
 import type { BookMeta, BookRecord } from '../types'
 
 export const useLibraryStore = defineStore('library', () => {
+  const sync = useSyncStore()
   const books = ref<BookRecord[]>([])
   const loading = ref(false)
   const error = ref<string | null>(null)
@@ -23,6 +26,7 @@ export const useLibraryStore = defineStore('library', () => {
       progress: b.progress,
       cfi: b.cfi,
       tocLabel: b.tocLabel,
+      hasData: b.hasData,
     })),
   )
 
@@ -97,9 +101,19 @@ export const useLibraryStore = defineStore('library', () => {
         progress: 0,
         cfi: null,
         tocLabel: null,
+        updatedAt: Date.now(),
         data,
+        hasData: true,
       }
       await putBook(record)
+      // Mirror metadata/progress to the cloud (EPUB bytes stay on-device)
+      if (sync.signedIn) {
+        try {
+          await sync.pushBook(record)
+        } catch (e) {
+          console.warn('[library] push book to cloud failed', e)
+        }
+      }
       books.value = await listBooks()
       return id
     } finally {
@@ -112,6 +126,13 @@ export const useLibraryStore = defineStore('library', () => {
     const removed = books.value.find((b) => b.id === id)
     if (removed?.coverUrl?.startsWith('blob:')) URL.revokeObjectURL(removed.coverUrl)
     books.value = books.value.filter((b) => b.id !== id)
+    if (sync.signedIn) {
+      try {
+        await sync.deleteRemoteBook(id)
+      } catch (e) {
+        console.warn('[library] delete remote book failed', e)
+      }
+    }
   }
 
   async function recordProgress(
@@ -126,6 +147,57 @@ export const useLibraryStore = defineStore('library', () => {
       b.tocLabel = patch.tocLabel
       b.lastReadAt = Date.now()
     }
+    if (sync.signedIn) {
+      try {
+        await sync.pushPosition(id, patch.cfi, patch.progress, patch.tocLabel)
+      } catch {
+        /* sync failures must not break local reading */
+      }
+    }
+  }
+
+  /**
+   * Merge cloud books into local IndexedDB (last-write-wins by updated_at).
+   * Books whose EPUB bytes are not on this device get hasData = false.
+   */
+  async function mergePulledBooks() {
+    if (!sync.signedIn) return
+    let rows: Awaited<ReturnType<typeof sync.pullBooks>>
+    try {
+      rows = await sync.pullBooks()
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : 'Failed to pull library from cloud'
+      return
+    }
+    for (const row of rows) {
+      const local = await getBook(row.id)
+      const serverMs = isoToMs(row.updated_at) ?? 0
+      const localMs = local?.updatedAt ?? 0
+      if (!local || serverMs > localMs) {
+        await putBook({
+          id: row.id,
+          title: row.title,
+          author: row.author,
+          coverUrl: row.cover_url,
+          fileName: row.file_name,
+          fileSize: row.file_size ?? 0,
+          addedAt: isoToMs(row.added_at) ?? Date.now(),
+          lastReadAt: isoToMs(row.last_read_at),
+          progress: row.progress ?? 0,
+          cfi: row.cfi,
+          tocLabel: row.toc_label,
+          updatedAt: serverMs,
+          data: local?.data ?? new ArrayBuffer(0),
+          hasData: !!local,
+        } satisfies BookRecord)
+      }
+    }
+    books.value = await listBooks()
+  }
+
+  async function loadLibraryFromCloud() {
+    await loadAll()
+    await mergePulledBooks()
   }
 
   function getMeta(id: string): BookMeta | undefined {
@@ -139,6 +211,7 @@ export const useLibraryStore = defineStore('library', () => {
     error,
     importing,
     loadAll,
+    loadLibraryFromCloud,
     importFile,
     removeBook,
     recordProgress,
